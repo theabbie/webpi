@@ -25,7 +25,6 @@ function contentToText(content: unknown): string {
       if (part?.type === "thinking") return part.thinking || "";
       if (part?.type === "toolCall")
         return `[already executed tool call ${part.name}: ${JSON.stringify(part.arguments || {})}]`;
-      if (part?.type === "toolResult") return `[tool result: ${contentToText(part.content)}]`;
       return "";
     })
     .filter(Boolean)
