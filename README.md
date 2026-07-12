@@ -22,8 +22,10 @@ private temporary workspace.
 The app intentionally pins Streamlit 1.50 because the WebSocket bridge hooks
 its Tornado server. Test that integration before upgrading Streamlit.
 
-The editable local package in `requirements.txt` makes the WebSocket bootstrap
-load before Streamlit constructs its server; it is required for deployment.
+The local bootstrap package in `requirements.txt` installs `sitecustomize.py`
+into the environment so it loads before Streamlit constructs its server. It is
+installed as a regular wheel rather than editable to remain safe under
+Streamlit Cloud's threaded Python runtime.
 
 ## Local run
 
