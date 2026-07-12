@@ -48,6 +48,7 @@ terminal_html = """
   <div id="terminal"></div>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.js"></script>
   <script>
     const term = new Terminal({
       cursorBlink:true, scrollback:10000, fontSize:14, lineHeight:1.15,
@@ -56,6 +57,20 @@ terminal_html = """
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
+    const openLink = (event, uri) => {
+      event?.preventDefault?.();
+      const opened = window.open(uri, '_blank', 'noopener,noreferrer');
+      if (opened) opened.opener = null;
+    };
+    const linkHandler = {
+      activate: (event, text) => openLink(event, text),
+      hover: () => {},
+      leave: () => {},
+      allowNonHttpProtocols: false,
+    };
+    // Detect plain-text HTTP(S) URLs and handle explicit OSC 8 terminal links.
+    term.loadAddon(new WebLinksAddon.WebLinksAddon(openLink, linkHandler));
+    term.options.linkHandler = linkHandler;
     term.open(document.getElementById('terminal'));
     // srcdoc frames report `about:` with an empty host. Resolve relative to
     // the containing Streamlit document so hosted apps retain their `~/+/`

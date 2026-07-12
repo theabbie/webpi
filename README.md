@@ -34,7 +34,8 @@ cursor movement, and responsive terminal resizing.
 - **Zero model setup** — the bundled `exa-direct` extension defaults to
   `google/gemini-2.5-flash` through Exa's public demo endpoint.
 - **Full-screen xterm.js** — responsive sizing, 10,000 lines of scrollback,
-  true-color ANSI output, paste, arrows, Escape, and Ctrl-key handling.
+  true-color ANSI output, clickable links, paste, arrows, Escape, and Ctrl-key
+  handling.
 - **Fresh workspace per connection** — every terminal starts in a private
   `0700` directory under `/tmp/webpi-workspaces`.
 - **Fresh session storage** — Pi transcripts stay inside that connection's
