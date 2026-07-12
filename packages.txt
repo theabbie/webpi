@@ -1,2 +1,6 @@
 ripgrep
 fd-find
+curl
+unzip
+fuse3
+ca-certificates

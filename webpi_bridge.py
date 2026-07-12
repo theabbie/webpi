@@ -1,9 +1,11 @@
 import asyncio
 import errno
 import fcntl
+import hashlib
 import mimetypes
 import os
 import pathlib
+import platform
 import pty
 import select
 import shutil
@@ -18,6 +20,8 @@ import threading
 import termios
 import time
 import secrets
+import urllib.request
+import zipfile
 from urllib.parse import urlparse
 
 
@@ -25,12 +29,29 @@ ROOT = pathlib.Path(__file__).resolve().parent
 RUNTIME_DIR = pathlib.Path("/tmp/webpi-pi-runtime")
 NODE_DIR = pathlib.Path("/tmp/webpi-node")
 AGENT_DIR = pathlib.Path("/tmp/webpi-agent")
+TOOLS_DIR = pathlib.Path("/tmp/webpi-tools")
 WORKSPACE_ROOT = pathlib.Path("/tmp/webpi-workspaces")
 PI_VERSION = "0.80.6"
 NODE_VERSION = "22.19.0"
+RCLONE_VERSION = "1.74.3"
+RCLONE_BUILDS = {
+    ("linux", "x86_64"): (
+        "linux-amd64",
+        "dbee7ccd7a5d617e4ed4cd4555c16669b511abfe8d31164f61be35ac9e999bd2",
+    ),
+    ("darwin", "arm64"): (
+        "osx-arm64",
+        "33a435ab17023b686918ce9a3975aceb75fe1796c694f38f1993024be1f063f5",
+    ),
+    ("darwin", "x86_64"): (
+        "osx-amd64",
+        "417cabd402d57806d597bd0ba8fb33a434ca8c2a1a5aa98de5a0bd4b52b39202",
+    ),
+}
 EXA_PROVIDER = "exa-direct"
 EXA_MODEL = "google/gemini-2.5-flash"
 _INSTALL_LOCK = threading.Lock()
+_RCLONE_INSTALL_LOCK = threading.Lock()
 _PATCHED = False
 _PUBLIC_ROOTS: dict[str, pathlib.Path] = {}
 _PUBLIC_ROOTS_LOCK = threading.Lock()
@@ -150,6 +171,58 @@ def ensure_pi_runtime() -> str:
         return str(runtime_pi)
 
 
+def ensure_rclone_runtime() -> str:
+    """Install a pinned, checksum-verified rclone binary without root."""
+    destination = TOOLS_DIR / "bin" / "rclone"
+    if destination.is_file():
+        try:
+            subprocess.run(
+                [str(destination), "version"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+            )
+            return str(destination)
+        except (OSError, subprocess.SubprocessError):
+            destination.unlink(missing_ok=True)
+
+    with _RCLONE_INSTALL_LOCK:
+        if destination.is_file():
+            return str(destination)
+        build = RCLONE_BUILDS.get((platform.system().lower(), platform.machine().lower()))
+        if build is None:
+            raise RuntimeError(
+                f"Unsupported rclone platform: {platform.system()} {platform.machine()}"
+            )
+        target, expected_sha256 = build
+        archive_name = f"rclone-v{RCLONE_VERSION}-{target}.zip"
+        url = f"https://downloads.rclone.org/v{RCLONE_VERSION}/{archive_name}"
+        staging = pathlib.Path(tempfile.mkdtemp(prefix="webpi-rclone-", dir="/tmp"))
+        try:
+            archive = staging / archive_name
+            with urllib.request.urlopen(url, timeout=120) as response:
+                archive.write_bytes(response.read())
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            if digest != expected_sha256:
+                raise RuntimeError("Downloaded rclone archive failed SHA-256 verification")
+            with zipfile.ZipFile(archive) as bundle:
+                member = f"rclone-v{RCLONE_VERSION}-{target}/rclone"
+                bundle.extract(member, staging)
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+            shutil.copy2(staging / member, destination)
+            destination.chmod(0o755)
+            subprocess.run(
+                [str(destination), "version"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                timeout=20,
+            )
+            return str(destination)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+
 def _new_workspace() -> pathlib.Path:
     WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     workspace = pathlib.Path(tempfile.mkdtemp(prefix="session-", dir=WORKSPACE_ROOT))
@@ -159,6 +232,10 @@ def _new_workspace() -> pathlib.Path:
     )
     public = workspace / "public"
     public.mkdir(mode=0o700)
+    (workspace / "proton").mkdir(mode=0o755)
+    (workspace / ".rclone" / "config").mkdir(parents=True, mode=0o700)
+    (workspace / ".rclone-cache" / "proton").mkdir(parents=True, mode=0o700)
+    (workspace / ".rclone-logs").mkdir(mode=0o700)
     (public / "index.html").write_text(
         """<!doctype html>
 <html lang="en">
@@ -340,6 +417,7 @@ def _make_handler():
         async def open(self):
             try:
                 pi_command = await asyncio.to_thread(ensure_pi_runtime)
+                await asyncio.to_thread(ensure_rclone_runtime)
                 self.workspace = _new_workspace()
                 self.public_token = "".join(
                     secrets.choice(_TOKEN_ALPHABET) for _ in range(32)
@@ -386,10 +464,19 @@ def _make_handler():
                     env["WEBPI_PORT"] = str(self.proxy_port)
                     env["PORT"] = str(self.proxy_port)
                     env["WEBPI_PROXY_URL"] = proxy_url
+                    env["RCLONE_CONFIG"] = str(
+                        self.workspace / ".rclone" / "config" / "rclone.conf"
+                    )
+                    env["RCLONE_MOUNT_DIR"] = str(self.workspace / "proton")
+                    env["RCLONE_CACHE_DIR"] = str(
+                        self.workspace / ".rclone-cache" / "proton"
+                    )
+                    env["RCLONE_LOG_DIR"] = str(self.workspace / ".rclone-logs")
                     env["PI_TELEMETRY"] = "0"
                     env["TERM"] = "xterm-256color"
                     env["COLORTERM"] = "truecolor"
                     env["PATH"] = f"{AGENT_DIR / 'bin'}:{env.get('PATH', '')}"
+                    env["PATH"] = f"{TOOLS_DIR / 'bin'}:{env.get('PATH', '')}"
                     if (NODE_DIR / "bin").exists():
                         env["PATH"] = f"{NODE_DIR / 'bin'}:{env.get('PATH', '')}"
                     os.execvpe(

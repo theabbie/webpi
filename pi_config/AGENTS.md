@@ -53,3 +53,21 @@ must run as a server. Prefer `public/` for purely static sites.
   responses, and redirects. WebSocket upgrades and hot-module reload are not
   currently supported.
 - The proxy URL stops working when the terminal disconnects or the app restarts.
+
+## Proton Drive with rclone
+
+WebPi includes a pinned rclone binary with Proton Drive support. Configuration,
+mount, cache, and logs are private to this temporary terminal session.
+
+- Run `rclone config` and create a remote such as `proton` with storage type
+  `protondrive`. Rclone writes the obscured credentials to `$RCLONE_CONFIG`.
+- The prepared mount directory is `$RCLONE_MOUNT_DIR`, the VFS cache is
+  `$RCLONE_CACHE_DIR`, and logs belong under `$RCLONE_LOG_DIR`.
+- To try a FUSE mount, run:
+  `rclone mount proton: "$RCLONE_MOUNT_DIR" --vfs-cache-mode writes --cache-dir "$RCLONE_CACHE_DIR" --log-file "$RCLONE_LOG_DIR/mount.log" --daemon`.
+- Streamlit Cloud may deny access to `/dev/fuse`. If mounting fails with a
+  permission or operation-not-permitted error, use `rclone copy` between the
+  remote and a normal workspace directory instead.
+- Never print, read back, or expose `$RCLONE_CONFIG`; it contains reversible
+  credentials. The configuration and mount disappear when the session or app
+  restarts.

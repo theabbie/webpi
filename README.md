@@ -48,7 +48,7 @@ cursor movement, and responsive terminal resizing.
 - **Scoped localhost servers** — each terminal receives one assigned port and
   a public `$WEBPI_PROXY_URL` for Node, Python, and other HTTP applications.
 - **Reproducible runtime** — Streamlit bootstraps Node `22.19.0`, Pi `0.80.6`,
-  `ripgrep`, and `fd-find` when the app environment is created.
+  rclone `1.74.3`, `ripgrep`, and `fd-find` when the app environment is created.
 - **Normal interactive startup** — Pi displays its standard header, loaded
   global context, model, and extensions.
 
@@ -186,6 +186,40 @@ port. Use relative browser asset paths because the URL contains a session
 prefix. Session tokens contain only lowercase letters and digits. WebSocket
 upgrades and hot-module reload are not currently supported.
 The server and URL stop when the terminal disconnects or the app restarts.
+
+## Proton Drive experiments
+
+WebPi includes a checksum-verified rclone binary with Proton Drive support and
+prepares private per-session locations:
+
+```bash
+echo "$RCLONE_CONFIG"
+echo "$RCLONE_MOUNT_DIR"
+echo "$RCLONE_CACHE_DIR"
+echo "$RCLONE_LOG_DIR"
+```
+
+Create a Proton Drive remote interactively:
+
+```bash
+rclone config
+```
+
+Choose a remote name such as `proton` and the `protondrive` storage type. Then
+try mounting it:
+
+```bash
+rclone mount proton: "$RCLONE_MOUNT_DIR" \
+  --vfs-cache-mode writes \
+  --cache-dir "$RCLONE_CACHE_DIR" \
+  --log-file "$RCLONE_LOG_DIR/mount.log" \
+  --daemon
+```
+
+Community Cloud may deny FUSE mounts. If that happens, use `rclone copy`
+instead. Configuration and files are ephemeral and disappear with the session;
+never print or publish the rclone config because its obscured password is
+reversible.
 
 ## Keyboard essentials
 
