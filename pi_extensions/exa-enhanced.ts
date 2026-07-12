@@ -12,6 +12,8 @@ import TypeBuilder, {
   type FieldType,
 } from "../baml_exa/baml_client/type_builder.ts";
 import { fromMarkdown } from "mdast-util-from-markdown";
+import { writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 
 const EXA_ENDPOINT = "https://demos.exa.ai/chatbot-demo/api/chat/stream";
 const UPSTREAM_MODEL = "google/gemini-2.5-flash";
@@ -342,27 +344,20 @@ function streamExaBaml(
           env: { OPENAI_API_KEY: "unused" },
         });
       } catch (firstParseError) {
-        try {
-          const repairedText = await askExa(
-            `${prompt}\n\nThe previous response below did not match the required ` +
-            `output type. Preserve its intended action or answer, but re-emit ` +
-            `it using exactly the required structure and nothing else.\n\n` +
-            `<rejected_response>\n${modelText}\n</rejected_response>`,
-            options?.signal,
+        if (!context.tools?.some((tool: any) => tool.name === "read"))
+          throw new AggregateError(
+            [firstParseError],
+            "BAML could not parse the response and the read tool is unavailable",
           );
-          parsed = b.parse.NextAction(repairedText, {
-            tb,
-            env: { OPENAI_API_KEY: "unused" },
-          });
-        } catch (repairError) {
-          if (!modelText.trim()) {
-            throw new AggregateError(
-              [firstParseError, repairError],
-              "BAML failed to parse both the original and repaired responses",
-            );
-          }
-          parsed = { actions: [{ type: "text", text: modelText }] };
-        }
+        const feedbackPath = resolve(process.cwd(), "last_output_feedback.log");
+        await writeFile(
+          feedbackPath,
+          `Your previous output was invalid and could not be converted into a ` +
+          `Pi text response or tool call. Continue the original task and emit ` +
+          `valid output matching the required schema.\n\nPrevious output:\n${modelText}\n`,
+          "utf8",
+        );
+        parsed = { actions: [{ tool: "read", arguments: { path: feedbackPath } }] };
       }
 
       throwIfAborted(options?.signal);
