@@ -21,13 +21,20 @@ function contextToText(context: Context): string {
     const content = typeof message.content === "string"
       ? message.content
       : message.content
-          .map((part: any) =>
-            part.type === "text" ? part.text
-            : part.type === "thinking" ? part.thinking
-            : part.type === "toolCall"
-              ? `[already executed tool call ${part.name}: ${JSON.stringify(part.arguments || {})}]`
-              : ""
-          )
+          .map((part: any) => {
+            switch (part.type) {
+              case "text":
+                return part.text;
+              case "thinking":
+                return `[thinking]\n${part.thinking}`;
+              case "toolCall":
+                return `[already executed tool call ${part.name}: ${JSON.stringify(part.arguments || {})}]`;
+              case "image":
+                return `[image provided here, but unavailable to this model: ${part.mimeType}]`;
+              default:
+                return "";
+            }
+          })
           .filter(Boolean)
           .join("\n");
 
