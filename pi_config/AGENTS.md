@@ -59,8 +59,12 @@ must run as a server. Prefer `public/` for purely static sites.
 WebPi includes a pinned rclone binary with Proton Drive support. Configuration,
 mount, cache, and logs are private to this temporary terminal session.
 
-- Run `rclone config` and create a remote such as `proton` with storage type
-  `protondrive`. Rclone writes the obscured credentials to `$RCLONE_CONFIG`.
+- Pi's `!` and bash tools are non-interactive. Never tell the user to run the
+  interactive `rclone config` menu inside WebPi.
+- Have the user obscure their password on a trusted local terminal first, then
+  use rclone's non-interactive command:
+  `rclone config create proton protondrive username USERNAME password OBSCURED_PASSWORD`.
+  Treat both values as sensitive and never echo or read the resulting config.
 - The prepared mount directory is `$RCLONE_MOUNT_DIR`, the VFS cache is
   `$RCLONE_CACHE_DIR`, and logs belong under `$RCLONE_LOG_DIR`.
 - To try a FUSE mount, run:

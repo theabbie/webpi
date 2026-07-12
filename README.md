@@ -199,14 +199,24 @@ echo "$RCLONE_CACHE_DIR"
 echo "$RCLONE_LOG_DIR"
 ```
 
-Create a Proton Drive remote interactively:
+Pi's `!` commands are non-interactive, so create the remote without the rclone
+menu. First obscure the password on a trusted local machine:
 
 ```bash
-rclone config
+read -s -p 'Proton password: ' PROTON_PASSWORD; printf '\n'
+rclone obscure "$PROTON_PASSWORD"
+unset PROTON_PASSWORD
 ```
 
-Choose a remote name such as `proton` and the `protondrive` storage type. Then
-try mounting it:
+Copy the resulting obscured value, then run this in WebPi with your values:
+
+```bash
+!rclone config create proton protondrive username 'YOUR_PROTON_USERNAME' password 'OBSCURED_PASSWORD'
+!rclone lsd proton:
+```
+
+The obscured value is reversible and must still be treated as a credential.
+Then try mounting the configured remote:
 
 ```bash
 rclone mount proton: "$RCLONE_MOUNT_DIR" \
