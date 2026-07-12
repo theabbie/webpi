@@ -35,6 +35,7 @@ function contextToPrompt(context: Context): string {
     "When asked for JSON, output exactly one strict JSON object and nothing else.",
     "Do not wrap JSON in markdown fences.",
     "To use a tool, output exactly one JSON object in this form: {\"tool\":\"tool_name\",\"arguments\":{...}}.",
+    "The arguments object is mandatory. Put every tool parameter inside arguments; never put command, path, content, pattern, or other parameters beside tool.",
     "For the write tool, arguments MUST be ordered as path first and content second: {\"tool\":\"write\",\"arguments\":{\"path\":\"file.py\",\"content\":\"...\"}}.",
     "Keep each file small and focused. Prefer multiple helper files over one write whose content exceeds 4000 characters.",
     "Never describe a tool call or place it in a markdown fence.",
@@ -120,7 +121,23 @@ function parseToolRequest(text: string, context: Context) {
   }
 
   const name = value?.tool || value?.name;
-  const args = value?.arguments;
+  let args = value?.arguments;
+  // Exa sometimes emits an otherwise unambiguous shorthand such as
+  // {"tool":"bash","command":"npm test"}. Normalize top-level tool
+  // parameters instead of displaying the JSON as text and ending the turn.
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    if (value?.args && typeof value.args === "object" && !Array.isArray(value.args)) {
+      args = value.args;
+    } else if (value?.input && typeof value.input === "object" && !Array.isArray(value.input)) {
+      args = value.input;
+    } else if (value && typeof value === "object" && !Array.isArray(value)) {
+      args = Object.fromEntries(
+        Object.entries(value).filter(
+          ([key]) => !["tool", "name", "arguments", "args", "input"].includes(key),
+        ),
+      );
+    }
+  }
   if (typeof name !== "string" || !args || typeof args !== "object" || Array.isArray(args))
     return null;
   if (!context.tools?.some((tool: any) => tool.name === name)) return null;
