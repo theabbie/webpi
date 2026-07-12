@@ -1,0 +1,4 @@
+-e .
+streamlit==1.50.0
+nodeenv==1.9.1
+tornado==6.5.2
