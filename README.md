@@ -45,6 +45,8 @@ cursor movement, and responsive terminal resizing.
   temporary workspace.
 - **Instant static publishing** — files written to `public/` are served at the
   session-specific URL in `$WEBPI_PUBLIC_URL`, with no localhost server needed.
+- **Scoped localhost servers** — each terminal receives one assigned port and
+  a public `$WEBPI_PROXY_URL` for Node, Python, and other HTTP applications.
 - **Reproducible runtime** — Streamlit bootstraps Node `22.19.0`, Pi `0.80.6`,
   `ripgrep`, and `fd-find` when the app environment is created.
 - **Normal interactive startup** — Pi displays its standard header, loaded
@@ -147,6 +149,42 @@ Paths map directly: `public/assets/app.css` is available at
 `$WEBPI_PUBLIC_URL/assets/app.css`. Use relative asset URLs because every
 terminal receives a unique, unguessable URL prefix. Hosting remains active only
 while that terminal's WebSocket is connected.
+
+## Run a Node server
+
+Each session receives a dedicated loopback address and public proxy URL:
+
+```bash
+echo "$WEBPI_HOST:$WEBPI_PORT"
+echo "$WEBPI_PROXY_URL"
+```
+
+A minimal Node server can use the standard `PORT` variable:
+
+```js
+// server.js
+const http = require("node:http");
+
+const server = http.createServer((request, response) => {
+  response.setHeader("content-type", "application/json");
+  response.end(JSON.stringify({ ok: true, path: request.url }));
+});
+
+server.listen(Number(process.env.PORT), process.env.WEBPI_HOST);
+```
+
+Start it in the background and open the reported URL:
+
+```bash
+nohup node server.js > .webpi-server.log 2>&1 &
+echo "$WEBPI_PROXY_URL"
+```
+
+The public URL forwards GET, POST, PUT, PATCH, DELETE, OPTIONS, request bodies,
+query strings, responses, and redirects to that session's assigned localhost
+port. Use relative browser asset paths because the URL contains a session
+prefix. WebSocket upgrades and hot-module reload are not currently supported.
+The server and URL stop when the terminal disconnects or the app restarts.
 
 ## Keyboard essentials
 

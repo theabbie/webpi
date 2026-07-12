@@ -31,3 +31,25 @@ HTTP while this terminal session remains connected.
 - This is static file hosting only. Do not start a localhost HTTP server for
   files that can be served from `public/`.
 - The URL stops working when the terminal disconnects or the app restarts.
+
+## Previewing a localhost server
+
+WebPi assigns this session one localhost port and exposes it through a scoped
+public HTTP proxy. Use it for Node, Python, or other HTTP applications that
+must run as a server. Prefer `public/` for purely static sites.
+
+- Bind the server to `$WEBPI_HOST` and `$WEBPI_PORT`. `PORT` contains the same
+  assigned port for Node frameworks that read it automatically.
+- The browser-facing address is `$WEBPI_PROXY_URL`. After starting a server,
+  always give the user that complete clickable URL.
+- Never choose another port and never bind the server to `0.0.0.0`.
+- Keep the server alive in the background and write logs inside the workspace.
+  For example: `nohup node server.js > .webpi-server.log 2>&1 &`.
+- Node servers should listen with
+  `server.listen(Number(process.env.PORT), process.env.WEBPI_HOST)`.
+- Use relative URLs for browser assets and links. Root-absolute paths such as
+  `/assets/app.js` escape the session-specific proxy prefix.
+- The proxy supports normal HTTP methods, request bodies, query strings, API
+  responses, and redirects. WebSocket upgrades and hot-module reload are not
+  currently supported.
+- The proxy URL stops working when the terminal disconnects or the app restarts.

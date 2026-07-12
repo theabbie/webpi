@@ -8,6 +8,7 @@ import pty
 import select
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -32,7 +33,13 @@ _INSTALL_LOCK = threading.Lock()
 _PATCHED = False
 _PUBLIC_ROOTS: dict[str, pathlib.Path] = {}
 _PUBLIC_ROOTS_LOCK = threading.Lock()
+_PROXY_TARGETS: dict[str, tuple[int, str]] = {}
+_PROXY_TARGETS_LOCK = threading.Lock()
 _MAX_PUBLIC_FILE_BYTES = 25 * 1024 * 1024
+_HOP_BY_HOP_HEADERS = {
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailer", "transfer-encoding", "upgrade",
+}
 
 
 def _node_major(command: str) -> int:
@@ -170,7 +177,15 @@ def _resize(fd: int, rows: int, cols: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
+def _available_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def _make_handler():
+    import tornado.httpclient
+    import tornado.httputil
     import tornado.ioloop
     import tornado.web
     import tornado.websocket
@@ -212,11 +227,104 @@ def _make_handler():
             self.set_header("X-Content-Type-Options", "nosniff")
             self.write(content)
 
+    class LocalPortProxyHandler(tornado.web.RequestHandler):
+        async def _proxy(self, token: str, requested_path: str = ""):
+            with _PROXY_TARGETS_LOCK:
+                target = _PROXY_TARGETS.get(token)
+            if target is None:
+                raise tornado.web.HTTPError(404)
+            port, public_base = target
+            target_url = f"http://127.0.0.1:{port}/" + requested_path.lstrip("/")
+            if self.request.query:
+                target_url += f"?{self.request.query}"
+
+            headers = tornado.httputil.HTTPHeaders()
+            for name in (
+                "Accept", "Accept-Language", "Authorization", "Content-Type",
+                "Range", "If-None-Match", "If-Modified-Since",
+            ):
+                value = self.request.headers.get(name)
+                if value:
+                    headers[name] = value
+            headers["Host"] = f"127.0.0.1:{port}"
+            headers["X-Forwarded-Host"] = self.request.host
+            headers["X-Forwarded-Proto"] = self.request.headers.get(
+                "X-Forwarded-Proto", self.request.protocol
+            )
+            headers["X-Forwarded-Prefix"] = public_base.rstrip("/")
+
+            request = tornado.httpclient.HTTPRequest(
+                target_url,
+                method=self.request.method,
+                headers=headers,
+                body=(
+                    self.request.body
+                    if self.request.method not in {"GET", "HEAD"}
+                    else None
+                ),
+                follow_redirects=False,
+                allow_nonstandard_methods=True,
+                request_timeout=120,
+            )
+            try:
+                response = await tornado.httpclient.AsyncHTTPClient().fetch(
+                    request, raise_error=False
+                )
+            except Exception as exc:
+                self.set_status(502)
+                self.set_header("Content-Type", "text/plain; charset=utf-8")
+                self.finish(f"WebPi could not reach the session server on port {port}: {exc}")
+                return
+
+            self.set_status(response.code, response.reason)
+            for name, value in response.headers.get_all():
+                lowered = name.lower()
+                if lowered in _HOP_BY_HOP_HEADERS or lowered in {
+                    "content-length", "content-security-policy", "set-cookie",
+                }:
+                    continue
+                if lowered == "location":
+                    for origin in (
+                        f"http://127.0.0.1:{port}", f"http://localhost:{port}"
+                    ):
+                        if value.startswith(origin):
+                            value = public_base.rstrip("/") + value[len(origin):]
+                            break
+                    else:
+                        if value.startswith("/"):
+                            value = public_base.rstrip("/") + value
+                self.add_header(name, value)
+            self.set_header("Cache-Control", "no-store")
+            self.set_header("X-Content-Type-Options", "nosniff")
+            self.finish(response.body or b"")
+
+        async def get(self, token: str, requested_path: str = ""):
+            await self._proxy(token, requested_path)
+
+        async def head(self, token: str, requested_path: str = ""):
+            await self._proxy(token, requested_path)
+
+        async def post(self, token: str, requested_path: str = ""):
+            await self._proxy(token, requested_path)
+
+        async def put(self, token: str, requested_path: str = ""):
+            await self._proxy(token, requested_path)
+
+        async def patch(self, token: str, requested_path: str = ""):
+            await self._proxy(token, requested_path)
+
+        async def delete(self, token: str, requested_path: str = ""):
+            await self._proxy(token, requested_path)
+
+        async def options(self, token: str, requested_path: str = ""):
+            await self._proxy(token, requested_path)
+
     class PiTerminalHandler(tornado.websocket.WebSocketHandler):
         pid = None
         fd = None
         workspace = None
         public_token = None
+        proxy_port = None
 
         def check_origin(self, origin: str) -> bool:
             # Streamlit components are same-origin iframes. Reject cross-site
@@ -232,6 +340,7 @@ def _make_handler():
                 pi_command = await asyncio.to_thread(ensure_pi_runtime)
                 self.workspace = _new_workspace()
                 self.public_token = secrets.token_urlsafe(24)
+                self.proxy_port = _available_local_port()
                 with _PUBLIC_ROOTS_LOCK:
                     _PUBLIC_ROOTS[self.public_token] = self.workspace / "public"
                 supplied_base = self.get_query_argument("public_base", "")
@@ -243,6 +352,17 @@ def _make_handler():
                     scheme = self.request.headers.get("X-Forwarded-Proto", self.request.protocol)
                     supplied_base = f"{scheme}://{self.request.host}/webpi/public/"
                 public_url = f"{supplied_base.rstrip('/')}/{self.public_token}/"
+                supplied_proxy_base = self.get_query_argument("proxy_base", "")
+                parsed_proxy_base = urlparse(supplied_proxy_base)
+                if (
+                    parsed_proxy_base.scheme not in {"http", "https"}
+                    or parsed_proxy_base.netloc != self.request.host
+                ):
+                    scheme = self.request.headers.get("X-Forwarded-Proto", self.request.protocol)
+                    supplied_proxy_base = f"{scheme}://{self.request.host}/webpi/proxy/"
+                proxy_url = f"{supplied_proxy_base.rstrip('/')}/{self.public_token}/"
+                with _PROXY_TARGETS_LOCK:
+                    _PROXY_TARGETS[self.public_token] = (self.proxy_port, proxy_url)
                 initial_cols = max(1, min(int(self.get_query_argument("cols", "100")), 500))
                 initial_rows = max(1, min(int(self.get_query_argument("rows", "30")), 200))
                 pid, fd = pty.fork()
@@ -258,6 +378,10 @@ def _make_handler():
                     env["PI_CODING_AGENT_SESSION_DIR"] = str(session_dir)
                     env["WEBPI_PUBLIC_DIR"] = str(self.workspace / "public")
                     env["WEBPI_PUBLIC_URL"] = public_url
+                    env["WEBPI_HOST"] = "127.0.0.1"
+                    env["WEBPI_PORT"] = str(self.proxy_port)
+                    env["PORT"] = str(self.proxy_port)
+                    env["WEBPI_PROXY_URL"] = proxy_url
                     env["PI_TELEMETRY"] = "0"
                     env["TERM"] = "xterm-256color"
                     env["COLORTERM"] = "truecolor"
@@ -324,6 +448,8 @@ def _make_handler():
             if self.public_token:
                 with _PUBLIC_ROOTS_LOCK:
                     _PUBLIC_ROOTS.pop(self.public_token, None)
+                with _PROXY_TARGETS_LOCK:
+                    _PROXY_TARGETS.pop(self.public_token, None)
                 self.public_token = None
             if self.fd is not None:
                 try:
@@ -339,7 +465,7 @@ def _make_handler():
                     pass
                 self.pid = None
 
-    return PiTerminalHandler, PublicFileHandler
+    return PiTerminalHandler, PublicFileHandler, LocalPortProxyHandler
 
 
 def install_streamlit_websocket_route() -> None:
@@ -350,7 +476,7 @@ def install_streamlit_websocket_route() -> None:
     from streamlit.web.server.server import Server
 
     original = Server._create_app
-    terminal_handler, public_file_handler = _make_handler()
+    terminal_handler, public_file_handler, local_port_proxy_handler = _make_handler()
 
     def create_app_with_webpi(self):
         app = original(self)
@@ -360,6 +486,8 @@ def install_streamlit_websocket_route() -> None:
                 (r"/webpi/terminal", terminal_handler),
                 (r"/webpi/public/([^/]+)/(.*)", public_file_handler),
                 (r"/webpi/public/([^/]+)/?", public_file_handler),
+                (r"/webpi/proxy/([^/]+)/(.*)", local_port_proxy_handler),
+                (r"/webpi/proxy/([^/]+)/?", local_port_proxy_handler),
             ],
         )
         return app

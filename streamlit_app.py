@@ -82,6 +82,7 @@ terminal_html = """
     socketUrl.searchParams.set('cols', term.cols);
     socketUrl.searchParams.set('rows', term.rows);
     socketUrl.searchParams.set('public_base', new URL('webpi/public/', parentUrl).href);
+    socketUrl.searchParams.set('proxy_base', new URL('webpi/proxy/', parentUrl).href);
     const ws = new WebSocket(socketUrl);
     ws.binaryType = 'arraybuffer';
     const resize = () => {
