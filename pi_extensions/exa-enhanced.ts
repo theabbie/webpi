@@ -17,6 +17,26 @@ import { resolve } from "node:path";
 
 const EXA_ENDPOINT = "https://demos.exa.ai/chatbot-demo/api/chat/stream";
 const UPSTREAM_MODEL = "google/gemini-2.5-flash";
+const FEEDBACK_PREFIX = "Your previous output was invalid";
+const sequentialOverrides = new WeakMap<object, unknown>();
+
+function restoreToolExecutionModes(context: Context): void {
+  for (const tool of context.tools || []) {
+    if (!sequentialOverrides.has(tool)) continue;
+    const previous = sequentialOverrides.get(tool);
+    if (previous === undefined) delete (tool as any).executionMode;
+    else (tool as any).executionMode = previous;
+    sequentialOverrides.delete(tool);
+  }
+}
+
+function makeBatchSequential(context: Context, actions: any[]): void {
+  if (actions.length < 2) return;
+  const tool = context.tools?.find((candidate: any) => candidate.name === actions[0].tool);
+  if (!tool) return;
+  sequentialOverrides.set(tool, (tool as any).executionMode);
+  (tool as any).executionMode = "sequential";
+}
 
 function contextToText(context: Context): string {
   const messages = context.messages.map((message) => {
@@ -222,7 +242,7 @@ function buildToolTypes(context: Context): TypeBuilder {
   actions.push(tb.TextResponse.type());
   tb.DynamicDecision
     .addProperty("actions", tb.list(tb.union(actions)))
-    .description("Select one or more independent tool calls, or exactly one text response.");
+    .description("Tool calls execute sequentially in listed order. Select one or more calls, or exactly one text response.");
   return tb;
 }
 
@@ -327,8 +347,10 @@ function streamExaBaml(
     try {
       stream.push({ type: "start", partial: output });
       throwIfAborted(options?.signal);
+      restoreToolExecutionModes(context);
       const tb = buildToolTypes(context);
-      const request = await b.request.NextAction(contextToText(context), {
+      const conversation = contextToText(context);
+      const request = await b.request.NextAction(conversation, {
         tb,
         env: { OPENAI_API_KEY: "unused" },
       });
@@ -344,20 +366,25 @@ function streamExaBaml(
           env: { OPENAI_API_KEY: "unused" },
         });
       } catch (firstParseError) {
-        if (!context.tools?.some((tool: any) => tool.name === "read"))
+        if (!context.tools?.some((tool: any) => tool.name === "bash"))
           throw new AggregateError(
             [firstParseError],
-            "BAML could not parse the response and the read tool is unavailable",
+            "BAML could not parse the response and the bash tool is unavailable",
           );
         const feedbackPath = resolve(process.cwd(), "last_output_feedback.log");
         await writeFile(
           feedbackPath,
-          `Your previous output was invalid and could not be converted into a ` +
+          `${FEEDBACK_PREFIX} and could not be converted into a ` +
           `Pi text response or tool call. Continue the original task and emit ` +
           `valid output matching the required schema.\n\nPrevious output:\n${modelText}\n`,
           "utf8",
         );
-        parsed = { actions: [{ tool: "read", arguments: { path: feedbackPath } }] };
+        parsed = { actions: [{
+          tool: "bash",
+          arguments: {
+            command: "cat -- last_output_feedback.log && : > last_output_feedback.log",
+          },
+        }] };
       }
 
       throwIfAborted(options?.signal);
@@ -376,6 +403,7 @@ function streamExaBaml(
           throw new Error("BAML returned a text response without text");
         emitTextResult(stream, output, textAction.text);
       } else {
+        makeBatchSequential(context, actions);
         for (const action of actions) {
           if (typeof action.tool !== "string")
             throw new Error("BAML returned a tool call without a tool name");
