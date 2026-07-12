@@ -376,7 +376,8 @@ function streamExaBaml(
           feedbackPath,
           `${FEEDBACK_PREFIX} and could not be converted into a ` +
           `Pi text response or tool call. Continue the original task and emit ` +
-          `valid output matching the required schema.\n\nPrevious output:\n${modelText}\n`,
+          `valid output matching the required schema. Do not repeat the invalid ` +
+          `response and do not return an empty actions list.\n`,
           "utf8",
         );
         parsed = { actions: [{

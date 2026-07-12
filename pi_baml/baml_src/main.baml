@@ -26,7 +26,8 @@ function NextAction(context: string) -> DynamicDecision
     asks to run, inspect, edit, or write something and no matching result is
     present yet, you MUST select a tool. Never invent a tool result and never
     repeat an action that already has one. Never combine a text response with tool
-    calls. Do not output follow-up suggestions.
+    calls. Emit ordinary structured JSON, never JSON encoded inside a quoted or
+    escaped string. Do not output follow-up suggestions.
 
     <conversation>
     {{ context }}
