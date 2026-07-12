@@ -36,6 +36,7 @@ TOOLS_DIR = pathlib.Path("/tmp/webpi-tools")
 WORKSPACE_ROOT = pathlib.Path("/tmp/webpi-workspaces")
 RCLONE_STATE_DIR = pathlib.Path("/tmp/webpi-rclone")
 RCLONE_SYNC_DIR = pathlib.Path("/tmp/webpi-proton")
+PERSIST_BIN_DIR = RCLONE_SYNC_DIR / "bin"
 PI_VERSION = "0.80.6"
 NODE_VERSION = "22.19.0"
 RCLONE_VERSION = "1.74.3"
@@ -78,9 +79,11 @@ def configure_rclone_secret(config_content: str) -> None:
         return
     RCLONE_STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     config_path = RCLONE_STATE_DIR / "rclone.conf"
-    config_path.write_text(config_content.rstrip() + "\n")
-    config_path.chmod(0o600)
+    if not config_path.exists():
+        config_path.write_text(config_content.rstrip() + "\n")
+        config_path.chmod(0o600)
     RCLONE_SYNC_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    PERSIST_BIN_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     (RCLONE_STATE_DIR / "cache" / "proton").mkdir(
         parents=True, exist_ok=True, mode=0o700
     )
@@ -123,6 +126,10 @@ def _rclone_sync_loop() -> None:
 
     # Proton is the source of truth only when this app process starts.
     run("copy", "proton:", str(RCLONE_SYNC_DIR), "--update", "--create-empty-src-dirs")
+    PERSIST_BIN_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for command in PERSIST_BIN_DIR.iterdir():
+        if command.is_file():
+            command.chmod(command.stat().st_mode | 0o700)
 
     class UploadHandler(FileSystemEventHandler):
         def remote_path(self, path: str) -> str:
@@ -556,6 +563,7 @@ def _make_handler():
                     env["WEBPI_PROXY_URL"] = proxy_url
                     env["RCLONE_CONFIG"] = str(RCLONE_STATE_DIR / "rclone.conf")
                     env["RCLONE_MOUNT_DIR"] = str(RCLONE_SYNC_DIR)
+                    env["WEBPI_PERSIST_BIN"] = str(PERSIST_BIN_DIR)
                     env["RCLONE_CACHE_DIR"] = str(RCLONE_STATE_DIR / "cache" / "proton")
                     env["RCLONE_LOG_DIR"] = str(RCLONE_STATE_DIR / "logs")
                     env["PI_TELEMETRY"] = "0"
@@ -563,6 +571,7 @@ def _make_handler():
                     env["COLORTERM"] = "truecolor"
                     env["PATH"] = f"{AGENT_DIR / 'bin'}:{env.get('PATH', '')}"
                     env["PATH"] = f"{TOOLS_DIR / 'bin'}:{env.get('PATH', '')}"
+                    env["PATH"] = f"{PERSIST_BIN_DIR}:{env.get('PATH', '')}"
                     if (NODE_DIR / "bin").exists():
                         env["PATH"] = f"{NODE_DIR / 'bin'}:{env.get('PATH', '')}"
                     os.execvpe(

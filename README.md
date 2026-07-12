@@ -46,6 +46,8 @@ cursor movement, and responsive terminal resizing.
 - **Persistent Proton workspace** — `$RCLONE_MOUNT_DIR` restores Proton Drive
   when the app starts, then mirrors individual local file changes back through
   filesystem events so projects explicitly marked persistent survive restarts.
+- **Persistent commands** — scripts saved in `$WEBPI_PERSIST_BIN` survive in
+  Proton Drive and remain directly callable because that directory is in `PATH`.
 - **Instant static publishing** — files written to `public/` are served at the
   session-specific URL in `$WEBPI_PUBLIC_URL`, with no localhost server needed.
 - **Scoped localhost servers** — each terminal receives one assigned port and
@@ -76,7 +78,10 @@ terminal server.
 
 ## Deploy on Streamlit Community Cloud
 
-Fork this repository, create a new Streamlit app, and select:
+1. Fork this repository into your own GitHub account.
+2. Sign in to [Streamlit Community Cloud](https://share.streamlit.io/) with
+   GitHub and choose **Create app**.
+3. Select:
 
 ```text
 Repository: <your-account>/webpi
@@ -84,10 +89,23 @@ Branch: main
 Main file: streamlit_app.py
 ```
 
-No Streamlit secrets are required for the bundled Exa provider. On first boot,
-dependency preparation can take a little longer while Node and Pi are installed
-under `/tmp`. Later terminal connections reuse that runtime for the life of the
-app instance.
+4. Deploy. No secret is required for the bundled Exa provider. The first boot
+   takes longer while Streamlit installs the Python/system dependencies and
+   WebPi installs its pinned Node, Pi, and rclone runtimes under `/tmp`.
+5. Optional: to enable persistent Proton-backed files and commands, generate an
+   rclone configuration as described in [Proton Drive experiments](#proton-drive-experiments),
+   then add `RCLONE_CONFIG_CONTENT` under the app's **Settings → Secrets** and
+   reboot the app once.
+
+That is the complete hosted setup; no separate WebSocket server, exposed port,
+build command, or environment variable is required.
+
+> [!WARNING]
+> A WebPi deployment is intended for one trusted user. Concurrent terminals
+> share the same Streamlit process, OS user, persistent Proton directory, and
+> process namespace. One user can modify shared files or terminate another
+> user's processes, including accidentally. Fork and deploy your own instance
+> instead of sharing the public demo for important work.
 
 ## Run locally
 
@@ -206,6 +224,20 @@ echo "$RCLONE_CONFIG"
 echo "$RCLONE_MOUNT_DIR"
 echo "$RCLONE_CACHE_DIR"
 echo "$RCLONE_LOG_DIR"
+echo "$WEBPI_PERSIST_BIN"
+```
+
+`$WEBPI_PERSIST_BIN` points to `/tmp/webpi-proton/bin` and is already included
+in `PATH`. Put executable scripts there to keep custom commands across app
+restarts:
+
+```bash
+cat > "$WEBPI_PERSIST_BIN/hello" <<'SH'
+#!/usr/bin/env bash
+echo "Hello from persistent WebPi"
+SH
+chmod +x "$WEBPI_PERSIST_BIN/hello"
+hello
 ```
 
 Pi's `!` commands are non-interactive. To create a new remote, first obscure the
@@ -262,6 +294,11 @@ Do not expose a deployment containing valuable secrets or credentials to
 untrusted users. A destructive command can damage the current app instance,
 though a Streamlit Cloud reboot normally reconstructs it from the repository.
 Separate Streamlit apps run in separate environments.
+
+Multiple terminals in one deployment are not isolated from each other. They
+share the Proton-backed directory and can signal or kill processes belonging to
+other terminals. For reliable personal use, fork the repository and deploy a
+dedicated Streamlit app that you do not share with untrusted users.
 
 For stronger isolation, place the Pi process inside a real container, VM, or
 restricted operating-system sandbox.

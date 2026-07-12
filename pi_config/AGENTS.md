@@ -29,6 +29,9 @@ automatically synchronized Proton Drive directory.
 - Before starting persistent work, tell the user the chosen directory. Use a
   clear project subdirectory rather than placing unrelated files at the root.
 - Existing persistent projects should be reopened from `$RCLONE_MOUNT_DIR`.
+- `$WEBPI_PERSIST_BIN` is a persistent `bin/` directory already included in
+  `PATH`. Put reusable CLI scripts there, include an appropriate shebang, and
+  make them executable. They will remain directly callable in later sessions.
 - For a persistent static website, keep its source under `$RCLONE_MOUNT_DIR` and
   copy the files to `$WEBPI_PUBLIC_DIR` when the user wants a live preview.
 
