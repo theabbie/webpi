@@ -57,8 +57,13 @@ terminal_html = """
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(document.getElementById('terminal'));
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${location.host}/webpi/terminal`);
+    // srcdoc frames report `about:` with an empty host. Resolve relative to
+    // the containing Streamlit document so hosted apps retain their `~/+/`
+    // proxy prefix and HTTPS deployments correctly use WSS.
+    const parentUrl = new URL(document.referrer || window.parent.location.href);
+    const socketUrl = new URL('webpi/terminal', parentUrl);
+    socketUrl.protocol = parentUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(socketUrl);
     ws.binaryType = 'arraybuffer';
     const resize = () => {
       fit.fit();
