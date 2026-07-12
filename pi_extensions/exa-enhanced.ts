@@ -219,8 +219,8 @@ function buildToolTypes(context: Context): TypeBuilder {
 
   actions.push(tb.FinalAnswer.type());
   tb.DynamicDecision
-    .addProperty("action", tb.union(actions))
-    .description("Select exactly one available tool call or a final answer.");
+    .addProperty("actions", tb.list(tb.union(actions)))
+    .description("Select one or more independent tool calls, or exactly one final answer.");
   return tb;
 }
 
@@ -271,7 +271,7 @@ function emitTextResult(
   stream.push({ type: "done", reason: output.stopReason, message: output });
 }
 
-function emitToolResult(
+function emitToolCall(
   stream: AssistantMessageEventStream,
   output: AssistantMessage,
   name: string,
@@ -285,7 +285,6 @@ function emitToolResult(
   };
   output.content.push(toolCall);
   const contentIndex = output.content.indexOf(toolCall);
-  output.stopReason = "toolUse";
   stream.push({ type: "toolcall_start", contentIndex, partial: output });
   toolCall.arguments = args;
   stream.push({
@@ -295,7 +294,6 @@ function emitToolResult(
     partial: output,
   });
   stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
-  stream.push({ type: "done", reason: output.stopReason, message: output });
 }
 
 function streamExaBaml(
@@ -363,28 +361,39 @@ function streamExaBaml(
               "BAML failed to parse both the original and repaired responses",
             );
           }
-          parsed = { action: { tool: "final", content: modelText } };
+          parsed = { actions: [{ tool: "final", content: modelText }] };
         }
       }
 
       throwIfAborted(options?.signal);
-      parsed = parsed.action;
-      if (!isPlainObject(parsed) || typeof parsed.tool !== "string")
-        throw new Error("BAML returned an invalid action object");
+      const actions = parsed.actions;
+      if (!Array.isArray(actions) || actions.length === 0)
+        throw new Error("BAML returned no actions");
+      if (!actions.every((action: unknown) =>
+        isPlainObject(action) && typeof action.tool === "string"
+      )) throw new Error("BAML returned an invalid action");
 
-      if (parsed.tool === "final") {
-        if (typeof parsed.content !== "string")
+      const finalActions = actions.filter((action: any) => action.tool === "final");
+      if (finalActions.length) {
+        if (actions.length !== 1)
+          throw new Error("BAML combined a final answer with tool calls");
+        const finalAction = finalActions[0];
+        if (typeof finalAction.content !== "string")
           throw new Error("BAML returned a final action without text content");
-        emitTextResult(stream, output, parsed.content);
+        emitTextResult(stream, output, finalAction.content);
       } else {
-        if (!context.tools?.some((tool: any) => tool.name === parsed.tool))
-          throw new Error(`BAML selected unavailable tool: ${parsed.tool}`);
-        if (!isPlainObject(parsed.arguments))
-          throw new Error(`BAML returned invalid arguments for tool: ${parsed.tool}`);
-        const argumentsWithoutNulls = Object.fromEntries(
-          Object.entries(parsed.arguments).filter(([, value]) => value != null),
-        );
-        emitToolResult(stream, output, parsed.tool, argumentsWithoutNulls);
+        for (const action of actions) {
+          if (!context.tools?.some((tool: any) => tool.name === action.tool))
+            throw new Error(`BAML selected unavailable tool: ${action.tool}`);
+          if (!isPlainObject(action.arguments))
+            throw new Error(`BAML returned invalid arguments for tool: ${action.tool}`);
+          const argumentsWithoutNulls = Object.fromEntries(
+            Object.entries(action.arguments).filter(([, value]) => value != null),
+          );
+          emitToolCall(stream, output, action.tool, argumentsWithoutNulls);
+        }
+        output.stopReason = "toolUse";
+        stream.push({ type: "done", reason: output.stopReason, message: output });
       }
       stream.end();
     } catch (error) {
