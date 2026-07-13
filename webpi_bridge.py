@@ -38,7 +38,8 @@ WORKSPACE_ROOT = pathlib.Path("/tmp/webpi-workspaces")
 RCLONE_STATE_DIR = pathlib.Path("/tmp/webpi-rclone")
 RCLONE_SYNC_DIR = pathlib.Path("/tmp/webpi-proton")
 PERSIST_BIN_DIR = RCLONE_SYNC_DIR / "bin"
-PI_VERSION = "0.80.6"
+PI_PACKAGE = "@earendil-works/pi-coding-agent"
+PI_CHANNEL = "latest"
 NODE_VERSION = "22.19.0"
 RCLONE_VERSION = "1.74.3"
 RCLONE_BUILDS = {
@@ -58,6 +59,15 @@ RCLONE_BUILDS = {
 EXA_PROVIDER = "exa-enhanced"
 EXA_MODEL = "google/gemini-2.5-flash"
 BAML_VERSION = "0.223.0"
+RUNTIME_STAMP = RUNTIME_DIR / ".webpi-runtime"
+RUNTIME_SIGNATURE = "\n".join(
+    (
+        f"{PI_PACKAGE}@{PI_CHANNEL}",
+        f"node={NODE_VERSION}",
+        f"baml={BAML_VERSION}",
+        f"process={os.getpid()}",
+    )
+)
 _INSTALL_LOCK = threading.Lock()
 _RCLONE_INSTALL_LOCK = threading.Lock()
 _RCLONE_SYNC_LOCK = threading.Lock()
@@ -178,6 +188,14 @@ def _node_major(command: str) -> int:
         return 0
 
 
+def _installed_pi_version() -> str:
+    package_json = RUNTIME_DIR / "node_modules" / PI_PACKAGE / "package.json"
+    try:
+        return str(json.loads(package_json.read_text())["version"])
+    except (KeyError, OSError, TypeError, ValueError):
+        return ""
+
+
 def _write_agent_config() -> None:
     AGENT_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     persistent_pi = RCLONE_SYNC_DIR / ".pi"
@@ -193,8 +211,7 @@ def _write_agent_config() -> None:
     pi_wrapper = agent_bin / "pi"
     pi_wrapper.write_text(
         "#!/usr/bin/env bash\n"
-        f'exec "{RUNTIME_DIR / "node_modules" / ".bin" / "pi"}" '
-        f'--provider "{EXA_PROVIDER}" --model "{EXA_MODEL}" "$@"\n'
+        f'exec "{RUNTIME_DIR / "node_modules" / ".bin" / "pi"}" "$@"\n'
     )
     pi_wrapper.chmod(0o700)
     extensions = AGENT_DIR / "extensions"
@@ -215,7 +232,7 @@ def _write_agent_config() -> None:
         for resource in ("extensions", "skills", "prompts", "themes")
     }
     settings = {
-        "lastChangelogVersion": PI_VERSION,
+        "lastChangelogVersion": _installed_pi_version(),
         "theme": "dark",
         "defaultProvider": EXA_PROVIDER,
         "defaultModel": EXA_MODEL,
@@ -243,18 +260,31 @@ def _write_agent_config() -> None:
 
 
 def ensure_pi_runtime() -> str:
-    """Install an isolated Node/Pi runtime and return the Pi executable."""
+    """Install the latest Pi release in an isolated runtime and return it."""
     runtime_pi = RUNTIME_DIR / "node_modules" / ".bin" / "pi"
     baml_runtime = RUNTIME_DIR / "node_modules" / "@boundaryml" / "baml" / "package.json"
     isolated_node = NODE_DIR / "bin" / "node"
-    runtime_ready = runtime_pi.exists() and baml_runtime.exists()
-    if runtime_ready and isolated_node.exists() and _node_major(str(isolated_node)) >= 22:
+
+    def runtime_ready() -> bool:
+        node = str(isolated_node) if isolated_node.exists() else shutil.which("node")
+        try:
+            signature_matches = RUNTIME_STAMP.read_text() == RUNTIME_SIGNATURE
+        except OSError:
+            signature_matches = False
+        return bool(
+            runtime_pi.exists()
+            and baml_runtime.exists()
+            and node
+            and _node_major(node) >= 22
+            and signature_matches
+        )
+
+    if runtime_ready():
         _write_agent_config()
         return str(runtime_pi)
 
     with _INSTALL_LOCK:
-        runtime_ready = runtime_pi.exists() and baml_runtime.exists()
-        if runtime_ready and isolated_node.exists() and _node_major(str(isolated_node)) >= 22:
+        if runtime_ready():
             _write_agent_config()
             return str(runtime_pi)
 
@@ -288,7 +318,7 @@ def ensure_pi_runtime() -> str:
                 "--ignore-scripts",
                 "--no-audit",
                 "--no-fund",
-                f"@earendil-works/pi-coding-agent@{PI_VERSION}",
+                f"{PI_PACKAGE}@{PI_CHANNEL}",
                 f"@boundaryml/baml@{BAML_VERSION}",
             ],
             check=True,
@@ -297,6 +327,7 @@ def ensure_pi_runtime() -> str:
         )
         if not runtime_pi.exists():
             raise RuntimeError("Pi installation completed but its executable was not found")
+        RUNTIME_STAMP.write_text(RUNTIME_SIGNATURE)
         _write_agent_config()
         return str(runtime_pi)
 
@@ -604,8 +635,7 @@ def _make_handler():
                     if (NODE_DIR / "bin").exists():
                         env["PATH"] = f"{NODE_DIR / 'bin'}:{env.get('PATH', '')}"
                     env["PATH"] = f"{RUNTIME_DIR / 'node_modules' / '.bin'}:{env.get('PATH', '')}"
-                    # Keep WebPi's wrapper first so `pi` from Bash retains the
-                    # configured provider, model, and global agent directory.
+                    # Keep WebPi's transparent wrapper first in Bash.
                     env["PATH"] = f"{AGENT_DIR / 'bin'}:{env.get('PATH', '')}"
                     env["WEBPI_PI_COMMAND"] = str(AGENT_DIR / "bin" / "pi")
                     os.execvpe(
