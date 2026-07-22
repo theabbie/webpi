@@ -51,8 +51,8 @@ cursor movement, and responsive terminal resizing.
   Proton Drive and remain directly callable because that directory is in `PATH`.
 - **Instant static publishing** — files written to `public/` are served at the
   session-specific URL in `$WEBPI_PUBLIC_URL`, with no localhost server needed.
-- **Scoped localhost servers** — each terminal receives one assigned port and
-  a public `$WEBPI_PROXY_URL` for Node, Python, and other HTTP applications.
+- **Scoped localhost servers** — each terminal receives one assigned port plus
+  public HTTP and WebSocket URLs for Node, Python, CDP, and other applications.
 - **Current Pi runtime** — Streamlit bootstraps Node `22.19.0`, the latest Pi
   release available at app startup, rclone `1.74.3`, `ripgrep`, and `fd-find`.
 - **Normal interactive startup** — Pi displays its standard header, loaded
@@ -192,6 +192,7 @@ Each session receives a dedicated loopback address and public proxy URL:
 ```bash
 echo "$WEBPI_HOST:$WEBPI_PORT"
 echo "$WEBPI_PROXY_URL"
+echo "$WEBPI_PROXY_WS_URL"
 ```
 
 A minimal Node server can use the standard `PORT` variable:
@@ -219,8 +220,19 @@ The public URL forwards GET, POST, PUT, PATCH, DELETE, OPTIONS, request bodies,
 query strings, responses, and redirects to that session's assigned localhost
 port. Use relative browser asset paths because the URL contains a session
 prefix. Session tokens contain only lowercase letters and digits. WebSocket
-upgrades and hot-module reload are not currently supported.
+clients use `$WEBPI_PROXY_WS_URL` with the server's relative socket path, such
+as `${WEBPI_PROXY_WS_URL}devtools/browser` for a CDP endpoint.
 The server and URL stop when the terminal disconnects or the app restarts.
+
+For example, expose an Obscura CDP server with:
+
+```bash
+obscura serve --port "$WEBPI_PORT" --stealth
+```
+
+Connect a CDP client to `${WEBPI_PROXY_WS_URL}devtools/browser`. This is a
+`wss://` endpoint for Playwright, Puppeteer, or another WebSocket client; it is
+not an `https://` page to open in the browser address bar.
 
 ## Proton Drive experiments
 

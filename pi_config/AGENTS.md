@@ -35,7 +35,7 @@ Session workspace disappears. `$RCLONE_MOUNT_DIR` persists via Proton sync.
 - After publish/update → give complete clickable `$WEBPI_PUBLIC_URL`.
 - Disconnect/app restart → URL dead.
 
-## Run HTTP server
+## Run HTTP/WebSocket server
 
 Use only for Node/Python/dynamic HTTP apps. Static → §Publish.
 
@@ -46,7 +46,8 @@ Use only for Node/Python/dynamic HTTP apps. Static → §Publish.
 - ⊥ choose another port. ⊥ bind `0.0.0.0`.
 - After start → give complete clickable `$WEBPI_PROXY_URL`.
 - Use relative browser URLs; root paths escape scoped proxy prefix.
-- Proxy: HTTP methods, bodies, queries, APIs, redirects. ⊥ WebSocket/HMR.
+- Proxy: HTTP methods, bodies, queries, APIs, redirects, WebSocket upgrades.
+- WebSocket base: `$WEBPI_PROXY_WS_URL`; append the server's relative socket path.
 - Disconnect/app restart → proxy dead.
 
 ## Proton Drive

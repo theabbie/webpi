@@ -463,7 +463,20 @@ def _make_handler():
             self.set_header("X-Content-Type-Options", "nosniff")
             self.write(content)
 
-    class LocalPortProxyHandler(tornado.web.RequestHandler):
+    class LocalPortProxyHandler(tornado.websocket.WebSocketHandler):
+        def initialize(self):
+            self.upstream = None
+            self.relay_task = None
+
+        @property
+        def max_message_size(self) -> int:
+            return 64 * 1024 * 1024
+
+        def check_origin(self, origin: str) -> bool:
+            if not origin:
+                return False
+            return urlparse(origin).netloc == self.request.host
+
         async def _proxy(self, token: str, requested_path: str = ""):
             with _PROXY_TARGETS_LOCK:
                 target = _PROXY_TARGETS.get(token)
@@ -535,7 +548,72 @@ def _make_handler():
             self.finish(response.body or b"")
 
         async def get(self, token: str, requested_path: str = ""):
+            if self.request.headers.get("Upgrade", "").lower() == "websocket":
+                await super().get(token, requested_path)
+                return
             await self._proxy(token, requested_path)
+
+        async def open(self, token: str, requested_path: str = ""):
+            with _PROXY_TARGETS_LOCK:
+                target = _PROXY_TARGETS.get(token)
+            if target is None:
+                self.close(code=1008, reason="Unknown WebPi proxy session")
+                return
+            port, _ = target
+            target_url = f"ws://127.0.0.1:{port}/" + requested_path.lstrip("/")
+            if self.request.query:
+                target_url += f"?{self.request.query}"
+            headers = tornado.httputil.HTTPHeaders()
+            for name in ("Authorization", "User-Agent"):
+                value = self.request.headers.get(name)
+                if value:
+                    headers[name] = value
+            try:
+                self.upstream = await tornado.websocket.websocket_connect(
+                    tornado.httpclient.HTTPRequest(
+                        target_url, headers=headers, connect_timeout=15
+                    ),
+                    max_message_size=64 * 1024 * 1024,
+                )
+            except Exception as exc:
+                detail = f"{type(exc).__name__}: {exc}"
+                self.close(code=1011, reason=f"Local WebSocket unavailable: {detail}"[:123])
+                return
+            self.relay_task = asyncio.create_task(self._relay_upstream())
+
+        async def _relay_upstream(self):
+            try:
+                while self.upstream is not None:
+                    message = await self.upstream.read_message()
+                    if message is None:
+                        break
+                    await self.write_message(message, binary=isinstance(message, bytes))
+            except tornado.websocket.WebSocketClosedError:
+                pass
+            finally:
+                if self.ws_connection is not None:
+                    code = self.upstream.close_code if self.upstream else None
+                    reason = self.upstream.close_reason if self.upstream else None
+                    self.close(code=code, reason=reason)
+
+        async def on_message(self, message):
+            if self.upstream is None:
+                self.close(code=1011, reason="Local WebSocket is not connected")
+                return
+            try:
+                await self.upstream.write_message(
+                    message, binary=isinstance(message, bytes)
+                )
+            except tornado.websocket.WebSocketClosedError:
+                self.close()
+
+        def on_close(self):
+            if self.relay_task is not None:
+                self.relay_task.cancel()
+                self.relay_task = None
+            if self.upstream is not None:
+                self.upstream.close(self.close_code, self.close_reason)
+                self.upstream = None
 
         async def head(self, token: str, requested_path: str = ""):
             await self._proxy(token, requested_path)
@@ -600,6 +678,9 @@ def _make_handler():
                     scheme = self.request.headers.get("X-Forwarded-Proto", self.request.protocol)
                     supplied_proxy_base = f"{scheme}://{self.request.host}/webpi/proxy/"
                 proxy_url = f"{supplied_proxy_base.rstrip('/')}/{self.public_token}/"
+                proxy_ws_url = proxy_url.replace("https://", "wss://", 1).replace(
+                    "http://", "ws://", 1
+                )
                 with _PROXY_TARGETS_LOCK:
                     _PROXY_TARGETS[self.public_token] = (self.proxy_port, proxy_url)
                 initial_cols = max(1, min(int(self.get_query_argument("cols", "100")), 500))
@@ -621,6 +702,7 @@ def _make_handler():
                     env["WEBPI_PORT"] = str(self.proxy_port)
                     env["PORT"] = str(self.proxy_port)
                     env["WEBPI_PROXY_URL"] = proxy_url
+                    env["WEBPI_PROXY_WS_URL"] = proxy_ws_url
                     env["RCLONE_CONFIG"] = str(RCLONE_STATE_DIR / "rclone.conf")
                     env["RCLONE_MOUNT_DIR"] = str(RCLONE_SYNC_DIR)
                     env["WEBPI_PERSIST_BIN"] = str(PERSIST_BIN_DIR)
